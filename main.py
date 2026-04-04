@@ -289,7 +289,7 @@ class LayerPanel(QWidget):
         scale_group = QGroupBox("Vertical Scale")
         scale_layout = QHBoxLayout(scale_group)
         self.scale_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scale_slider.setRange(1, 500)
+        self.scale_slider.setRange(1, 2000)
         self.scale_slider.setValue(100)
         self.scale_slider.valueChanged.connect(self._on_scale_change)
         scale_layout.addWidget(self.scale_slider)
@@ -641,7 +641,7 @@ class ProfileChart(pg.PlotWidget):
             color = get_channel_color(header, color_idx)
             self.color_map[header] = color
             pen = pg.mkPen(color, width=2)
-            curve = self.plot(x, profile.data[header] * self.vertical_scale,
+            curve = self.plot(x, profile.data[header],
                              pen=pen, name=header)
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
@@ -666,7 +666,7 @@ class ProfileChart(pg.PlotWidget):
             color = get_channel_color(header, color_idx)
             # Make secondary slightly transparent with dashed line
             pen = pg.mkPen(color, width=2, style=Qt.PenStyle.DashLine)
-            curve = self.plot(x, profile.data[header] * self.vertical_scale,
+            curve = self.plot(x, profile.data[header],
                              pen=pen)
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
@@ -685,9 +685,20 @@ class ProfileChart(pg.PlotWidget):
 
     def set_vertical_scale(self, scale: float):
         self.vertical_scale = scale
-        self._rebuild_curves()
-        if len(self.profiles) > 1:
-            self._rebuild_secondary_curves()
+        # Instead of scaling data, adjust the Y-axis view range
+        # Higher scale = zoom in on Y axis (smaller range visible)
+        if self.profiles:
+            # Find max value across all visible channels to set a reasonable base range
+            max_val = 0
+            for ch in self.enabled_channels:
+                if ch in self.profiles[0].data:
+                    ch_max = np.max(np.abs(self.profiles[0].data[ch]))
+                    max_val = max(max_val, ch_max)
+            if max_val == 0:
+                max_val = 100
+            # Base range shows full data; scale zooms in
+            y_range = max_val * 1.1 / scale
+            self.setYRange(-y_range * 0.05, y_range, padding=0)
 
     def set_shift_offset(self, offset: int):
         self.shift_offset = offset

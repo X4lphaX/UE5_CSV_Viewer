@@ -5,7 +5,8 @@
       "Bash(python build.py)",
       "Bash(pip install:*)",
       "Bash(pip list:*)",
-      "Bash(timeout 6 python main.py)"
+      "Bash(timeout 6 python main.py)",
+      "Bash(taskkill //F //IM UE5_CSV_Viewer.exe)"
     ]
   }
 }
