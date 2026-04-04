@@ -269,6 +269,7 @@ class LayerPanel(QWidget):
     """Photoshop-style layer toggle panel with grouped channels."""
     channel_toggled = Signal(str, bool)
     vertical_scale_changed = Signal(float)
+    smoothing_changed = Signal(int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -289,7 +290,7 @@ class LayerPanel(QWidget):
         scale_group = QGroupBox("Vertical Scale")
         scale_layout = QHBoxLayout(scale_group)
         self.scale_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scale_slider.setRange(1, 2000)
+        self.scale_slider.setRange(1, 10000)
         self.scale_slider.setValue(100)
         self.scale_slider.valueChanged.connect(self._on_scale_change)
         scale_layout.addWidget(self.scale_slider)
@@ -297,6 +298,19 @@ class LayerPanel(QWidget):
         self.scale_label.setFixedWidth(45)
         scale_layout.addWidget(self.scale_label)
         layout.addWidget(scale_group)
+
+        # Smoothing
+        smooth_group = QGroupBox("Smoothing")
+        smooth_layout = QHBoxLayout(smooth_group)
+        self.smooth_slider = QSlider(Qt.Orientation.Horizontal)
+        self.smooth_slider.setRange(1, 50)
+        self.smooth_slider.setValue(1)
+        self.smooth_slider.valueChanged.connect(self._on_smooth_change)
+        smooth_layout.addWidget(self.smooth_slider)
+        self.smooth_label = QLabel("Off")
+        self.smooth_label.setFixedWidth(45)
+        smooth_layout.addWidget(self.smooth_label)
+        layout.addWidget(smooth_group)
 
         # Quick toggles
         btn_layout = QHBoxLayout()
@@ -375,6 +389,13 @@ class LayerPanel(QWidget):
         scale = value / 100.0
         self.scale_label.setText(f"{scale:.1f}x")
         self.vertical_scale_changed.emit(scale)
+
+    def _on_smooth_change(self, value: int):
+        if value <= 1:
+            self.smooth_label.setText("Off")
+        else:
+            self.smooth_label.setText(f"{value}")
+        self.smoothing_changed.emit(value)
 
     def _set_all(self, checked: bool):
         for toggle in self.toggles.values():
@@ -584,6 +605,7 @@ class ProfileChart(pg.PlotWidget):
         self.enabled_channels: set[str] = set()
         self.vertical_scale: float = 1.0
         self.shift_offset: int = 0
+        self.smoothing_window: int = 1
 
         # Connect mouse signals
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
@@ -641,7 +663,7 @@ class ProfileChart(pg.PlotWidget):
             color = get_channel_color(header, color_idx)
             self.color_map[header] = color
             pen = pg.mkPen(color, width=2)
-            curve = self.plot(x, profile.data[header],
+            curve = self.plot(x, self._smooth(profile.data[header]),
                              pen=pen, name=header)
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
@@ -663,10 +685,10 @@ class ProfileChart(pg.PlotWidget):
         for header in profile.headers:
             if header == "EVENTS":
                 continue
-            color = get_channel_color(header, color_idx)
-            # Make secondary slightly transparent with dashed line
+            color = QColor(get_channel_color(header, color_idx))
+            color.setAlpha(153)  # ~60% opacity
             pen = pg.mkPen(color, width=2, style=Qt.PenStyle.DashLine)
-            curve = self.plot(x, profile.data[header],
+            curve = self.plot(x, self._smooth(profile.data[header]),
                              pen=pen)
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
@@ -699,6 +721,18 @@ class ProfileChart(pg.PlotWidget):
             # Base range shows full data; scale zooms in
             y_range = max_val * 1.1 / scale
             self.setYRange(-y_range * 0.05, y_range, padding=0)
+
+    def _smooth(self, data: np.ndarray) -> np.ndarray:
+        if self.smoothing_window <= 1:
+            return data
+        kernel = np.ones(self.smoothing_window) / self.smoothing_window
+        return np.convolve(data, kernel, mode='same')
+
+    def set_smoothing(self, window: int):
+        self.smoothing_window = window
+        self._rebuild_curves()
+        if len(self.profiles) > 1:
+            self._rebuild_secondary_curves()
 
     def set_shift_offset(self, offset: int):
         self.shift_offset = offset
@@ -876,6 +910,7 @@ class MainWindow(QMainWindow):
 
         self.layer_panel.channel_toggled.connect(self.chart.set_channel_visible)
         self.layer_panel.vertical_scale_changed.connect(self.chart.set_vertical_scale)
+        self.layer_panel.smoothing_changed.connect(self.chart.set_smoothing)
 
         self.shift_slider.valueChanged.connect(self._on_shift_changed)
         self.shift_reset.clicked.connect(lambda: self.shift_slider.setValue(0))
