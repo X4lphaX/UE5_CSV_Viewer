@@ -526,7 +526,8 @@ class FrameDetailPanel(QWidget):
         if frame_idx < 0 or frame_idx >= profile.frame_count:
             return
 
-        label = f"Frame {frame_idx}"
+        t = profile.time_axis[frame_idx] if frame_idx < len(profile.time_axis) else 0
+        label = f"Frame {frame_idx} @ {t:.3f}s"
         if profile_label:
             label += f" ({profile_label})"
         event = profile.events[frame_idx] if frame_idx < len(profile.events) else ""
@@ -600,7 +601,7 @@ class ProfileChart(pg.PlotWidget):
 
         self.setMouseTracking(True)
         self.showGrid(x=True, y=True, alpha=0.15)
-        self.setLabel("bottom", "Frame")
+        self.setLabel("bottom", "Time (s)")
         self.setLabel("left", "Value (ms)")
 
         # Left-drag = rect zoom (RectMode), scroll = zoom, middle-drag = pan (handled by CustomViewBox)
@@ -637,7 +638,7 @@ class ProfileChart(pg.PlotWidget):
         self.enabled_channels: set[str] = set()
         self._sorted_enabled: list[str] = []  # cached sorted list
         self.vertical_scale: float = 1.0
-        self.shift_offset: int = 0
+        self.shift_offset: float = 0.0
         self.smoothing_window: int = 1
         self._smooth_cache: dict[tuple, np.ndarray] = {}
         self._smooth_cache_secondary: dict[tuple, np.ndarray] = {}
@@ -692,7 +693,7 @@ class ProfileChart(pg.PlotWidget):
             return
 
         profile = self.profiles[0]
-        self._primary_x = np.arange(profile.frame_count, dtype=np.float64)
+        self._primary_x = profile.time_axis.copy()
 
         color_idx = 0
         for header in profile.headers:
@@ -719,7 +720,7 @@ class ProfileChart(pg.PlotWidget):
             return
 
         profile = self.profiles[1]
-        self._secondary_x_base = np.arange(profile.frame_count, dtype=np.float64)
+        self._secondary_x_base = profile.time_axis.copy()
         x = self._secondary_x_base + self.shift_offset
 
         color_idx = 0
@@ -814,7 +815,7 @@ class ProfileChart(pg.PlotWidget):
         if len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 
-    def set_shift_offset(self, offset: int):
+    def set_shift_offset(self, offset: float):
         self.shift_offset = offset
         if len(self.profiles) > 1 and self._secondary_x_base is not None:
             x = self._secondary_x_base + offset
@@ -825,9 +826,21 @@ class ProfileChart(pg.PlotWidget):
         elif len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 
+    def _time_to_frame(self, t: float, profile: ProfileData) -> int:
+        """Find the frame index closest to time t (seconds) via binary search."""
+        idx = int(np.searchsorted(profile.time_axis, t))
+        # Clamp and pick nearest between idx-1 and idx
+        if idx <= 0:
+            return 0
+        if idx >= profile.frame_count:
+            return profile.frame_count - 1
+        if abs(profile.time_axis[idx] - t) < abs(profile.time_axis[idx - 1] - t):
+            return idx
+        return idx - 1
+
     def _on_mouse_moved(self, pos):
         mouse_point = self.getViewBox().mapSceneToView(pos)
-        frame_idx = int(round(mouse_point.x()))
+        t = mouse_point.x()  # time in seconds
 
         if not self.profiles:
             self.vline.setVisible(False)
@@ -836,6 +849,7 @@ class ProfileChart(pg.PlotWidget):
             return
 
         profile = self.profiles[0]
+        frame_idx = self._time_to_frame(t, profile)
         if frame_idx < 0 or frame_idx >= profile.frame_count:
             self.tooltip_label.setVisible(False)
             self.vline.setVisible(False)
@@ -848,7 +862,8 @@ class ProfileChart(pg.PlotWidget):
         self.hline.setVisible(True)
 
         # Build tooltip text with visible channel values
-        parts = [f"<b>Frame {frame_idx}</b>"]
+        frame_time = profile.time_axis[frame_idx]
+        parts = [f"<b>Frame {frame_idx} @ {frame_time:.3f}s</b>"]
 
         event = profile.events[frame_idx] if frame_idx < len(profile.events) else ""
         if event:
@@ -856,7 +871,12 @@ class ProfileChart(pg.PlotWidget):
 
         has_secondary = len(self.profiles) > 1
         p2 = self.profiles[1] if has_secondary else None
-        shifted_idx = frame_idx - self.shift_offset if has_secondary else -1
+        # For secondary, find the frame at the equivalent time (accounting for shift)
+        if has_secondary and p2 is not None:
+            secondary_t = t - self.shift_offset
+            shifted_idx = self._time_to_frame(secondary_t, p2)
+        else:
+            shifted_idx = -1
 
         for ch in self._sorted_enabled:
             ch_data = profile.data.get(ch)
@@ -887,11 +907,13 @@ class ProfileChart(pg.PlotWidget):
     def _on_mouse_clicked(self, event):
         if event.button() == Qt.MouseButton.LeftButton and not event.modifiers():
             mouse_point = self.getViewBox().mapSceneToView(event.scenePos())
-            frame_idx = int(round(mouse_point.x()))
-            if self.profiles and 0 <= frame_idx < self.profiles[0].frame_count:
-                self.click_line.setPos(frame_idx)
-                self.click_line.setVisible(True)
-                self.frame_clicked.emit(frame_idx)
+            t = mouse_point.x()
+            if self.profiles:
+                frame_idx = self._time_to_frame(t, self.profiles[0])
+                if 0 <= frame_idx < self.profiles[0].frame_count:
+                    self.click_line.setPos(self.profiles[0].time_axis[frame_idx])
+                    self.click_line.setVisible(True)
+                    self.frame_clicked.emit(frame_idx)
 
     def reset_zoom(self):
         self.enableAutoRange()
@@ -989,20 +1011,21 @@ class MainWindow(QMainWindow):
         self.shift_left_btn = QToolButton()
         self.shift_left_btn.setText("\u25C0")
         self.shift_left_btn.setFixedSize(18, 18)
-        self.shift_left_btn.setToolTip("Shift left 1 frame")
+        self.shift_left_btn.setToolTip("Shift left 0.1s")
         self.shift_left_btn.setAutoRepeat(True)
         self.shift_left_btn.setAutoRepeatInterval(100)
         self.shift_slider = QSlider(Qt.Orientation.Horizontal)
-        self.shift_slider.setRange(-500, 500)
+        # Range in centiseconds (10ms steps) for fine control; ±500s max
+        self.shift_slider.setRange(-50000, 50000)
         self.shift_slider.setValue(0)
         self.shift_slider.setFixedHeight(16)
         self.shift_right_btn = QToolButton()
         self.shift_right_btn.setText("\u25B6")
         self.shift_right_btn.setFixedSize(18, 18)
-        self.shift_right_btn.setToolTip("Shift right 1 frame")
+        self.shift_right_btn.setToolTip("Shift right 0.1s")
         self.shift_right_btn.setAutoRepeat(True)
         self.shift_right_btn.setAutoRepeatInterval(100)
-        self.shift_label = QLabel("0 frames")
+        self.shift_label = QLabel("0.00s")
         self.shift_label.setStyleSheet(f"color: {DARK_TEXT}; font-size: 10px;")
         self.shift_label.setFixedWidth(65)
         self.shift_reset = QPushButton("Reset")
@@ -1060,8 +1083,8 @@ class MainWindow(QMainWindow):
 
         self.shift_slider.valueChanged.connect(self._on_shift_changed)
         self.shift_reset.clicked.connect(lambda: self.shift_slider.setValue(0))
-        self.shift_left_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() - 1))
-        self.shift_right_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() + 1))
+        self.shift_left_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() - 10))
+        self.shift_right_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() + 10))
 
         # Scrollbars for chart panning
         self.h_scrollbar.valueChanged.connect(self._on_h_scroll)
@@ -1111,9 +1134,10 @@ class MainWindow(QMainWindow):
             self.chart.reset_zoom()
 
             fname = os.path.basename(path)
-            self.file_label.setText(f"Primary: {fname} ({profile.frame_count} frames)")
+            duration = profile.time_axis[-1] if profile.frame_count > 0 else 0
+            self.file_label.setText(f"Primary: {fname} ({profile.frame_count} frames, {duration:.1f}s)")
             self.statusBar().showMessage(
-                f"Loaded {fname}: {profile.frame_count} frames, {len(profile.data)} channels"
+                f"Loaded {fname}: {profile.frame_count} frames, {duration:.1f}s, {len(profile.data)} channels"
             )
 
             # Show first frame details
@@ -1139,13 +1163,18 @@ class MainWindow(QMainWindow):
             self.btn_clear_secondary.setEnabled(True)
             self.shift_widget.setVisible(True)
 
-            # Update shift slider range
-            max_shift = max(self.profiles[0].frame_count, profile.frame_count)
-            self.shift_slider.setRange(-max_shift, max_shift)
+            # Update shift slider range based on time duration (centiseconds)
+            max_time = max(
+                self.profiles[0].time_axis[-1] if self.profiles[0].frame_count > 0 else 0,
+                profile.time_axis[-1] if profile.frame_count > 0 else 0,
+            )
+            max_shift_cs = int(max_time * 100) + 100  # centiseconds with margin
+            self.shift_slider.setRange(-max_shift_cs, max_shift_cs)
 
             fname = os.path.basename(path)
+            duration2 = profile.time_axis[-1] if profile.frame_count > 0 else 0
             self.file_label.setText(
-                self.file_label.text() + f" | Compare: {fname} ({profile.frame_count} frames)"
+                self.file_label.text() + f" | Compare: {fname} ({profile.frame_count} frames, {duration2:.1f}s)"
             )
             self.statusBar().showMessage(f"Loaded comparison: {fname}")
 
@@ -1165,7 +1194,8 @@ class MainWindow(QMainWindow):
         # Update label
         if self.profiles:
             fname = os.path.basename(self.profiles[0].filename)
-            self.file_label.setText(f"Primary: {fname} ({self.profiles[0].frame_count} frames)")
+            duration = self.profiles[0].time_axis[-1] if self.profiles[0].frame_count > 0 else 0
+            self.file_label.setText(f"Primary: {fname} ({self.profiles[0].frame_count} frames, {duration:.1f}s)")
 
     def _on_scale_change(self, value: int):
         scale = value / 100.0
@@ -1173,8 +1203,10 @@ class MainWindow(QMainWindow):
         self.chart.set_vertical_scale(scale)
 
     def _on_shift_changed(self, value: int):
-        self.shift_label.setText(f"{value} frames")
-        self.chart.set_shift_offset(value)
+        # Slider value is in centiseconds (0.01s steps)
+        offset_s = value / 100.0
+        self.shift_label.setText(f"{offset_s:.2f}s")
+        self.chart.set_shift_offset(offset_s)
 
     def _on_frame_clicked(self, frame_idx: int):
         if self.profiles:
@@ -1193,17 +1225,18 @@ class MainWindow(QMainWindow):
         x_min, x_max = view_range[0]
         y_min, y_max = view_range[1]
 
-        # Horizontal scrollbar: full data range is 0..frame_count
-        data_width = profile.frame_count
+        # Horizontal scrollbar: full data range is 0..max_time (seconds)
+        data_width = profile.time_axis[-1] if profile.frame_count > 0 else 0
         view_width = x_max - x_min
+        h_scale = 100  # scrollbar integer precision (centiseconds)
         if view_width < data_width:
-            page = int(view_width)
-            h_max = int(data_width - view_width)
+            page = int(view_width * h_scale)
+            h_max = int((data_width - view_width) * h_scale)
             self.h_scrollbar.blockSignals(True)
-            self.h_scrollbar.setRange(0, h_max)
+            self.h_scrollbar.setRange(0, max(0, h_max))
             self.h_scrollbar.setPageStep(max(1, page))
-            self.h_scrollbar.setSingleStep(1)
-            self.h_scrollbar.setValue(max(0, int(x_min)))
+            self.h_scrollbar.setSingleStep(max(1, page // 20))
+            self.h_scrollbar.setValue(max(0, int(x_min * h_scale)))
             self.h_scrollbar.blockSignals(False)
         else:
             self.h_scrollbar.blockSignals(True)
@@ -1244,7 +1277,9 @@ class MainWindow(QMainWindow):
         vb = self.chart.getViewBox()
         view_range = vb.viewRange()
         view_width = view_range[0][1] - view_range[0][0]
-        vb.setXRange(value, value + view_width, padding=0)
+        h_scale = 100  # centiseconds
+        x_start = value / h_scale
+        vb.setXRange(x_start, x_start + view_width, padding=0)
 
     def _on_v_scroll(self, value: int):
         if not self.profiles:

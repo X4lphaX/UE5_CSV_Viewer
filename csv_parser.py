@@ -28,6 +28,7 @@ class ProfileData:
     metadata: dict[str, str] = field(default_factory=dict)
     frame_count: int = 0
     filename: str = ""
+    time_axis: np.ndarray = field(default_factory=lambda: np.array([], dtype=np.float64))
 
     # Predefined channel groups for the UI
     TIMING_CHANNELS = [
@@ -194,5 +195,19 @@ def parse_csv(filepath: str) -> ProfileData:
 
     for arr_idx, col_idx in enumerate(data_col_indices):
         profile.data[headers[col_idx]] = np.ascontiguousarray(data_arrays[arr_idx])
+
+    # Build cumulative time axis from FrameTime (ms -> seconds).
+    # Falls back to frame indices if FrameTime is not available.
+    if "FrameTime" in profile.data:
+        cumtime_ms = np.cumsum(profile.data["FrameTime"])
+        # Time axis: each frame is plotted at the cumulative time at the *start* of that frame
+        # Frame 0 at t=0, frame 1 at t=FrameTime[0], etc.
+        profile.time_axis = np.empty(profile.frame_count, dtype=np.float64)
+        profile.time_axis[0] = 0.0
+        if profile.frame_count > 1:
+            profile.time_axis[1:] = cumtime_ms[:-1] / 1000.0  # convert ms to seconds
+    else:
+        # Fallback: use frame indices as pseudo-time
+        profile.time_axis = np.arange(profile.frame_count, dtype=np.float64)
 
     return profile
