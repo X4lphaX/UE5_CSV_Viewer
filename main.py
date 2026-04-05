@@ -13,7 +13,7 @@ from PySide6.QtWidgets import (
     QSlider, QGroupBox, QSplitter, QFrame, QTreeWidget, QTreeWidgetItem,
     QHeaderView, QToolButton, QSizePolicy, QGridLayout, QSpinBox,
     QDoubleSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
-    QLineEdit, QComboBox,
+    QLineEdit, QComboBox, QScrollBar,
 )
 from PySide6.QtCore import Qt, Signal, QPointF
 from PySide6.QtGui import QColor, QPen, QFont, QIcon, QPainter, QAction
@@ -139,8 +139,52 @@ QSlider::handle:horizontal {{
     margin: -5px 0;
     border-radius: 7px;
 }}
+QSlider::groove:vertical {{
+    width: 4px;
+    background: {DARK_BORDER};
+    border-radius: 2px;
+}}
+QSlider::handle:vertical {{
+    background: {DARK_ACCENT};
+    width: 14px;
+    height: 14px;
+    margin: 0 -5px;
+    border-radius: 7px;
+}}
 QScrollArea {{
     border: none;
+}}
+QScrollBar:horizontal {{
+    background: {DARK_BG};
+    height: 14px;
+    border: none;
+}}
+QScrollBar::handle:horizontal {{
+    background: {DARK_HOVER};
+    border-radius: 4px;
+    min-width: 20px;
+}}
+QScrollBar::handle:horizontal:hover {{
+    background: {DARK_ACCENT};
+}}
+QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
+    width: 0px;
+}}
+QScrollBar:vertical {{
+    background: {DARK_BG};
+    width: 14px;
+    border: none;
+}}
+QScrollBar::handle:vertical {{
+    background: {DARK_HOVER};
+    border-radius: 4px;
+    min-height: 20px;
+}}
+QScrollBar::handle:vertical:hover {{
+    background: {DARK_ACCENT};
+}}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
+    height: 0px;
 }}
 QTreeWidget {{
     background-color: {DARK_PANEL};
@@ -268,7 +312,6 @@ class ChannelToggleWidget(QWidget):
 class LayerPanel(QWidget):
     """Photoshop-style layer toggle panel with grouped channels."""
     channel_toggled = Signal(str, bool)
-    vertical_scale_changed = Signal(float)
     smoothing_changed = Signal(int)
 
     def __init__(self, parent=None):
@@ -285,19 +328,6 @@ class LayerPanel(QWidget):
         self.search.setPlaceholderText("Filter channels...")
         self.search.textChanged.connect(self._filter_channels)
         layout.addWidget(self.search)
-
-        # Vertical scale
-        scale_group = QGroupBox("Vertical Scale")
-        scale_layout = QHBoxLayout(scale_group)
-        self.scale_slider = QSlider(Qt.Orientation.Horizontal)
-        self.scale_slider.setRange(1, 10000)
-        self.scale_slider.setValue(100)
-        self.scale_slider.valueChanged.connect(self._on_scale_change)
-        scale_layout.addWidget(self.scale_slider)
-        self.scale_label = QLabel("1.0x")
-        self.scale_label.setFixedWidth(45)
-        scale_layout.addWidget(self.scale_label)
-        layout.addWidget(scale_group)
 
         # Smoothing
         smooth_group = QGroupBox("Smoothing")
@@ -384,11 +414,6 @@ class LayerPanel(QWidget):
 
     def _on_channel_toggle(self, name: str, checked: bool):
         self.channel_toggled.emit(name, checked)
-
-    def _on_scale_change(self, value: int):
-        scale = value / 100.0
-        self.scale_label.setText(f"{scale:.1f}x")
-        self.vertical_scale_changed.emit(scale)
 
     def _on_smooth_change(self, value: int):
         if value <= 1:
@@ -850,23 +875,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.file_label)
         main_layout.addLayout(toolbar)
 
-        # Shift slider (for comparison)
-        self.shift_group = QGroupBox("Comparison Time Shift")
-        shift_layout = QHBoxLayout(self.shift_group)
-        self.shift_slider = QSlider(Qt.Orientation.Horizontal)
-        self.shift_slider.setRange(-500, 500)
-        self.shift_slider.setValue(0)
-        self.shift_label = QLabel("0 frames")
-        self.shift_label.setFixedWidth(80)
-        self.shift_reset = QPushButton("Reset")
-        self.shift_reset.setFixedWidth(60)
-        shift_layout.addWidget(QLabel("Shift:"))
-        shift_layout.addWidget(self.shift_slider, 1)
-        shift_layout.addWidget(self.shift_label)
-        shift_layout.addWidget(self.shift_reset)
-        self.shift_group.setVisible(False)
-        main_layout.addWidget(self.shift_group)
-
         # Main content splitter
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -874,19 +882,92 @@ class MainWindow(QMainWindow):
         self.layer_panel = LayerPanel()
         splitter.addWidget(self.layer_panel)
 
-        # Center: Chart
+        # Center: Chart area with vertical scale on the left and shift slider on the bottom
         chart_container = QWidget()
-        chart_layout = QVBoxLayout(chart_container)
-        chart_layout.setContentsMargins(0, 0, 0, 0)
+        chart_grid = QGridLayout(chart_container)
+        chart_grid.setContentsMargins(0, 0, 0, 0)
+        chart_grid.setSpacing(2)
 
-        # Chart interaction hint
+        # Chart interaction hint (top, spanning columns 1-2)
         hint = QLabel("Scroll: Zoom | Middle-click drag: Pan | Left-click drag: Select region to zoom | Click: Select frame")
         hint.setStyleSheet(f"color: #666; font-size: 10px; padding: 2px;")
         hint.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        chart_layout.addWidget(hint)
+        chart_grid.addWidget(hint, 0, 1)
 
+        # Vertical scale slider (left of chart)
+        scale_widget = QWidget()
+        scale_vlayout = QVBoxLayout(scale_widget)
+        scale_vlayout.setContentsMargins(2, 0, 2, 0)
+        scale_vlayout.setSpacing(2)
+        self.scale_label = QLabel("1.0x")
+        self.scale_label.setStyleSheet(f"color: {DARK_TEXT}; font-size: 10px;")
+        self.scale_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        scale_vlayout.addWidget(self.scale_label)
+        self.scale_slider = QSlider(Qt.Orientation.Vertical)
+        self.scale_slider.setRange(1, 10000)
+        self.scale_slider.setValue(100)
+        self.scale_slider.setFixedWidth(20)
+        self.scale_slider.setToolTip("Vertical Scale")
+        scale_vlayout.addWidget(self.scale_slider, 1)
+        scale_widget.setFixedWidth(30)
+        chart_grid.addWidget(scale_widget, 1, 0)
+
+        # Chart (center)
         self.chart = ProfileChart()
-        chart_layout.addWidget(self.chart, 1)
+        chart_grid.addWidget(self.chart, 1, 1)
+
+        # Shift slider (below chart, same width) with arrow buttons
+        self.shift_widget = QWidget()
+        shift_layout = QHBoxLayout(self.shift_widget)
+        shift_layout.setContentsMargins(0, 2, 0, 0)
+        shift_layout.setSpacing(4)
+        self.shift_left_btn = QToolButton()
+        self.shift_left_btn.setText("\u25C0")
+        self.shift_left_btn.setFixedSize(18, 18)
+        self.shift_left_btn.setToolTip("Shift left 1 frame")
+        self.shift_left_btn.setAutoRepeat(True)
+        self.shift_left_btn.setAutoRepeatInterval(100)
+        self.shift_slider = QSlider(Qt.Orientation.Horizontal)
+        self.shift_slider.setRange(-500, 500)
+        self.shift_slider.setValue(0)
+        self.shift_slider.setFixedHeight(16)
+        self.shift_right_btn = QToolButton()
+        self.shift_right_btn.setText("\u25B6")
+        self.shift_right_btn.setFixedSize(18, 18)
+        self.shift_right_btn.setToolTip("Shift right 1 frame")
+        self.shift_right_btn.setAutoRepeat(True)
+        self.shift_right_btn.setAutoRepeatInterval(100)
+        self.shift_label = QLabel("0 frames")
+        self.shift_label.setStyleSheet(f"color: {DARK_TEXT}; font-size: 10px;")
+        self.shift_label.setFixedWidth(65)
+        self.shift_reset = QPushButton("Reset")
+        self.shift_reset.setFixedWidth(45)
+        self.shift_reset.setFixedHeight(18)
+        self.shift_reset.setStyleSheet("font-size: 10px; padding: 1px 4px;")
+        shift_layout.addWidget(QLabel("Shift:"))
+        shift_layout.addWidget(self.shift_left_btn)
+        shift_layout.addWidget(self.shift_slider, 1)
+        shift_layout.addWidget(self.shift_right_btn)
+        shift_layout.addWidget(self.shift_label)
+        shift_layout.addWidget(self.shift_reset)
+        self.shift_widget.setVisible(False)
+        chart_grid.addWidget(self.shift_widget, 2, 1)
+
+        # Horizontal scrollbar (below shift slider / chart)
+        self.h_scrollbar = QScrollBar(Qt.Orientation.Horizontal)
+        self.h_scrollbar.setFixedHeight(14)
+        self.h_scrollbar.setRange(0, 0)
+        chart_grid.addWidget(self.h_scrollbar, 3, 1)
+
+        # Vertical scrollbar (right of chart)
+        self.v_scrollbar = QScrollBar(Qt.Orientation.Vertical)
+        self.v_scrollbar.setFixedWidth(14)
+        self.v_scrollbar.setRange(0, 0)
+        chart_grid.addWidget(self.v_scrollbar, 1, 2)
+
+        # Make the chart row stretch
+        chart_grid.setRowStretch(1, 1)
+
         splitter.addWidget(chart_container)
 
         # Right: Frame detail panel
@@ -909,11 +990,18 @@ class MainWindow(QMainWindow):
         self.btn_reset_zoom.clicked.connect(self.chart.reset_zoom)
 
         self.layer_panel.channel_toggled.connect(self.chart.set_channel_visible)
-        self.layer_panel.vertical_scale_changed.connect(self.chart.set_vertical_scale)
+        self.scale_slider.valueChanged.connect(self._on_scale_change)
         self.layer_panel.smoothing_changed.connect(self.chart.set_smoothing)
 
         self.shift_slider.valueChanged.connect(self._on_shift_changed)
         self.shift_reset.clicked.connect(lambda: self.shift_slider.setValue(0))
+        self.shift_left_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() - 1))
+        self.shift_right_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() + 1))
+
+        # Scrollbars for chart panning
+        self.h_scrollbar.valueChanged.connect(self._on_h_scroll)
+        self.v_scrollbar.valueChanged.connect(self._on_v_scroll)
+        self.chart.getViewBox().sigRangeChanged.connect(self._on_chart_range_changed)
 
         self.chart.frame_clicked.connect(self._on_frame_clicked)
 
@@ -984,7 +1072,7 @@ class MainWindow(QMainWindow):
                 self.chart.set_channel_visible(ch, ch in self.chart.enabled_channels)
 
             self.btn_clear_secondary.setEnabled(True)
-            self.shift_group.setVisible(True)
+            self.shift_widget.setVisible(True)
 
             # Update shift slider range
             max_shift = max(self.profiles[0].frame_count, profile.frame_count)
@@ -1006,13 +1094,18 @@ class MainWindow(QMainWindow):
         self.chart.profiles = self.profiles.copy()
 
         self.btn_clear_secondary.setEnabled(False)
-        self.shift_group.setVisible(False)
+        self.shift_widget.setVisible(False)
         self.shift_slider.setValue(0)
 
         # Update label
         if self.profiles:
             fname = os.path.basename(self.profiles[0].filename)
             self.file_label.setText(f"Primary: {fname} ({self.profiles[0].frame_count} frames)")
+
+    def _on_scale_change(self, value: int):
+        scale = value / 100.0
+        self.scale_label.setText(f"{scale:.1f}x")
+        self.chart.set_vertical_scale(scale)
 
     def _on_shift_changed(self, value: int):
         self.shift_label.setText(f"{value} frames")
@@ -1022,6 +1115,90 @@ class MainWindow(QMainWindow):
         if self.profiles:
             self.detail_panel.show_frame(self.profiles[0], frame_idx, "Primary")
         self.statusBar().showMessage(f"Selected frame {frame_idx}")
+
+    # --- Scrollbar sync ---
+    def _update_scrollbars(self):
+        """Update scrollbar ranges and positions to reflect the current chart view."""
+        if not self.profiles:
+            return
+
+        profile = self.profiles[0]
+        vb = self.chart.getViewBox()
+        view_range = vb.viewRange()
+        x_min, x_max = view_range[0]
+        y_min, y_max = view_range[1]
+
+        # Horizontal scrollbar: full data range is 0..frame_count
+        data_width = profile.frame_count
+        view_width = x_max - x_min
+        if view_width < data_width:
+            page = int(view_width)
+            h_max = int(data_width - view_width)
+            self.h_scrollbar.blockSignals(True)
+            self.h_scrollbar.setRange(0, h_max)
+            self.h_scrollbar.setPageStep(max(1, page))
+            self.h_scrollbar.setSingleStep(1)
+            self.h_scrollbar.setValue(max(0, int(x_min)))
+            self.h_scrollbar.blockSignals(False)
+        else:
+            self.h_scrollbar.blockSignals(True)
+            self.h_scrollbar.setRange(0, 0)
+            self.h_scrollbar.blockSignals(False)
+
+        # Vertical scrollbar: estimate full Y range from visible channels
+        full_y_min = 0
+        full_y_max = 100
+        for ch in self.chart.enabled_channels:
+            if ch in profile.data:
+                ch_max = float(np.max(profile.data[ch]))
+                full_y_max = max(full_y_max, ch_max * 1.1)
+
+        view_height = y_max - y_min
+        data_height = full_y_max - full_y_min
+        if view_height < data_height:
+            scale = 1000  # integer precision
+            page = int(view_height * scale)
+            v_max = int((data_height - view_height) * scale)
+            self.v_scrollbar.blockSignals(True)
+            self.v_scrollbar.setRange(0, max(0, v_max))
+            self.v_scrollbar.setPageStep(max(1, page))
+            self.v_scrollbar.setSingleStep(max(1, page // 20))
+            # Invert: scrollbar top = high Y values
+            val = int((full_y_max - y_max) * scale)
+            self.v_scrollbar.setValue(max(0, min(v_max, val)))
+            self.v_scrollbar.blockSignals(False)
+        else:
+            self.v_scrollbar.blockSignals(True)
+            self.v_scrollbar.setRange(0, 0)
+            self.v_scrollbar.blockSignals(False)
+
+    def _on_chart_range_changed(self):
+        self._update_scrollbars()
+
+    def _on_h_scroll(self, value: int):
+        vb = self.chart.getViewBox()
+        view_range = vb.viewRange()
+        view_width = view_range[0][1] - view_range[0][0]
+        vb.setXRange(value, value + view_width, padding=0)
+
+    def _on_v_scroll(self, value: int):
+        if not self.profiles:
+            return
+        profile = self.profiles[0]
+        full_y_max = 100
+        for ch in self.chart.enabled_channels:
+            if ch in profile.data:
+                ch_max = float(np.max(profile.data[ch]))
+                full_y_max = max(full_y_max, ch_max * 1.1)
+
+        vb = self.chart.getViewBox()
+        view_range = vb.viewRange()
+        view_height = view_range[1][1] - view_range[1][0]
+        scale = 1000
+        # Invert: scrollbar value 0 = top of data
+        y_top = full_y_max - value / scale
+        y_bottom = y_top - view_height
+        vb.setYRange(y_bottom, y_top, padding=0)
 
 
 def main():

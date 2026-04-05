@@ -2,10 +2,10 @@
 
 
 a = Analysis(
-    ['D:\\Code\\UE5_CSV_Viewer\\main.py'],
+    ['d:\\Code\\UE5_CSV_Viewer\\main.py'],
     pathex=[],
     binaries=[],
-    datas=[('D:\\Code\\UE5_CSV_Viewer\\csv_parser.py', '.')],
+    datas=[('d:\\Code\\UE5_CSV_Viewer\\csv_parser.py', '.')],
     hiddenimports=['OpenGL', 'OpenGL.GL', 'OpenGL.platform.win32', 'PySide6.QtOpenGL', 'PySide6.QtOpenGLWidgets'],
     hookspath=[],
     hooksconfig={},

@@ -6,7 +6,8 @@
       "Bash(pip install:*)",
       "Bash(pip list:*)",
       "Bash(timeout 6 python main.py)",
-      "Bash(taskkill //F //IM UE5_CSV_Viewer.exe)"
+      "Bash(taskkill //F //IM UE5_CSV_Viewer.exe)",
+      "Bash(python -c \"from main import MainWindow; print\\('Import OK'\\)\")"
     ]
   }
 }
