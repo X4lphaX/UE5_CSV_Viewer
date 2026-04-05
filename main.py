@@ -7,6 +7,13 @@ import sys
 import os
 import numpy as np
 import pyqtgraph as pg
+
+# Native C++ acceleration (optional)
+try:
+    import _native_core
+    HAS_NATIVE = True
+except ImportError:
+    HAS_NATIVE = False
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QFileDialog, QPushButton, QLabel, QScrollArea, QCheckBox,
@@ -634,6 +641,7 @@ class ProfileChart(pg.PlotWidget):
         self.smoothing_window: int = 1
         self._smooth_cache: dict[tuple, np.ndarray] = {}
         self._smooth_cache_secondary: dict[tuple, np.ndarray] = {}
+        self._primary_x: np.ndarray | None = None
         self._secondary_x_base: np.ndarray | None = None
 
         # Connect mouse signals
@@ -684,7 +692,7 @@ class ProfileChart(pg.PlotWidget):
             return
 
         profile = self.profiles[0]
-        x = np.arange(profile.frame_count, dtype=np.float64)
+        self._primary_x = np.arange(profile.frame_count, dtype=np.float64)
 
         color_idx = 0
         for header in profile.headers:
@@ -693,8 +701,9 @@ class ProfileChart(pg.PlotWidget):
             color = get_channel_color(header, color_idx)
             self.color_map[header] = color
             pen = pg.mkPen(color, width=2)
-            curve = self.plot(x, self._get_smoothed(header, secondary=False),
-                             pen=pen, name=header)
+            y = self._get_smoothed(header, secondary=False)
+            dx, dy = self._downsample(self._primary_x, y)
+            curve = self.plot(dx, dy, pen=pen, name=header)
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
             color_idx += 1
@@ -720,8 +729,9 @@ class ProfileChart(pg.PlotWidget):
             color = QColor(get_channel_color(header, color_idx))
             color.setAlpha(153)  # ~60% opacity
             pen = pg.mkPen(color, width=2, style=Qt.PenStyle.DashLine)
-            curve = self.plot(x, self._get_smoothed(header, secondary=True),
-                             pen=pen)
+            y = self._get_smoothed(header, secondary=True)
+            dx, dy = self._downsample(x, y)
+            curve = self.plot(dx, dy, pen=pen)
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
             color_idx += 1
@@ -767,11 +777,28 @@ class ProfileChart(pg.PlotWidget):
         raw = self.profiles[idx].data[header]
         if self.smoothing_window <= 1:
             result = raw
+        elif HAS_NATIVE:
+            result = _native_core.smooth_moving_avg(
+                np.ascontiguousarray(raw, dtype=np.float64), self.smoothing_window)
         else:
             kernel = np.ones(self.smoothing_window) / self.smoothing_window
             result = np.convolve(raw, kernel, mode='same')
         cache[key] = result
         return result
+
+    @staticmethod
+    def _downsample(x: np.ndarray, y: np.ndarray, num_bins: int = 2000):
+        """Downsample for display using min/max envelope."""
+        if len(x) <= 2 * num_bins:
+            return x, y
+        if HAS_NATIVE:
+            return _native_core.downsample_minmax(
+                np.ascontiguousarray(x, dtype=np.float64),
+                np.ascontiguousarray(y, dtype=np.float64),
+                num_bins)
+        # Python fallback — simple min/max binning
+        indices = np.linspace(0, len(x) - 1, 2 * num_bins, dtype=int)
+        return x[indices], y[indices]
 
     def _invalidate_smooth_cache(self, secondary: bool = False):
         if secondary:
@@ -790,11 +817,11 @@ class ProfileChart(pg.PlotWidget):
     def set_shift_offset(self, offset: int):
         self.shift_offset = offset
         if len(self.profiles) > 1 and self._secondary_x_base is not None:
-            # Update X data in-place on existing curves instead of full rebuild
             x = self._secondary_x_base + offset
             for header, curve in self.curves_secondary.items():
                 y = self._get_smoothed(header, secondary=True)
-                curve.setData(x, y)
+                dx, dy = self._downsample(x, y)
+                curve.setData(dx, dy)
         elif len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 

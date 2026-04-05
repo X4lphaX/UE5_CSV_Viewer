@@ -4,10 +4,19 @@ UE5 CSV Profile Parser
 Parses Unreal Engine 5 CSV profiling dumps.
 Format: first row = headers (starting with "EVENTS"), data rows have empty first column,
 last rows contain metadata with [HasHeaderRowAtEnd] marker.
+
+Uses a native C++ backend when available, with a pure-Python fallback.
 """
 
 import numpy as np
 from dataclasses import dataclass, field
+
+# Try to load native C++ acceleration
+try:
+    import _native_core
+    HAS_NATIVE = True
+except ImportError:
+    HAS_NATIVE = False
 
 
 @dataclass
@@ -38,22 +47,18 @@ class ProfileData:
         """Return channels organized by prefix groups, only including columns that exist."""
         groups: dict[str, list[str]] = {}
 
-        # Primary timing
         timing = [c for c in self.TIMING_CHANNELS if c in self.data]
         if timing:
             groups["Timing"] = timing
 
-        # Memory
         mem = [c for c in self.MEMORY_CHANNELS if c in self.data]
         if mem:
             groups["Memory"] = mem
 
-        # CPU
         cpu = [c for c in self.CPU_CHANNELS if c in self.data]
         if cpu:
             groups["CPU"] = cpu
 
-        # Auto-group by prefix
         prefix_map: dict[str, list[str]] = {}
         skip = set(self.TIMING_CHANNELS + self.MEMORY_CHANNELS + self.CPU_CHANNELS + ["EVENTS"])
         for h in self.headers:
@@ -89,27 +94,8 @@ def _parse_header(line: str) -> list[str]:
     return headers
 
 
-def parse_csv(filepath: str) -> ProfileData:
-    """Parse a UE5 CSV profile file and return structured data."""
-    with open(filepath, "r", encoding="utf-8-sig") as f:
-        raw = f.read()
-
-    lines = raw.split("\n")
-    if not lines:
-        raise ValueError("Empty CSV file")
-
-    # Parse header row
-    headers = _parse_header(lines[0])
-    num_cols = len(headers)
-
-    # Find the EVENTS column index
-    events_col = headers.index("EVENTS") if "EVENTS" in headers else 0
-
-    # Identify data columns (non-EVENTS)
-    data_col_indices = [i for i, h in enumerate(headers) if h != "EVENTS"]
-
-    # Pre-scan to count data rows and find metadata boundary
-    data_start = 1
+def _find_data_bounds(lines: list[str]) -> tuple[int, int, dict[str, str]]:
+    """Scan from the end to find data region and parse metadata."""
     data_end = len(lines)
     metadata = {}
 
@@ -133,10 +119,15 @@ def parse_csv(filepath: str) -> ProfileData:
             continue
         break
 
-    # Pre-allocate numpy arrays and parse in a single pass
-    # Estimate row count (upper bound)
+    return 1, data_end, metadata
+
+
+def _parse_block_python(raw: str, lines: list[str], data_start: int, data_end: int,
+                        data_col_indices: list[int], events_col: int):
+    """Pure-Python fallback for numeric data parsing."""
     max_rows = data_end - data_start
-    data_arrays = np.zeros((len(data_col_indices), max_rows), dtype=np.float64)
+    num_data_cols = len(data_col_indices)
+    data_arrays = np.zeros((num_data_cols, max_rows), dtype=np.float64)
     events = []
     row_count = 0
 
@@ -145,16 +136,13 @@ def parse_csv(filepath: str) -> ProfileData:
         if not line or line.isspace():
             continue
 
-        # Fast split — CSV data rows in UE5 profiles don't use quoting for numeric fields
         fields = line.split(",")
 
-        # Extract event
         if events_col < len(fields):
             events.append(fields[events_col].strip())
         else:
             events.append("")
 
-        # Parse numeric columns directly into pre-allocated array
         for arr_idx, col_idx in enumerate(data_col_indices):
             if col_idx < len(fields):
                 val = fields[col_idx]
@@ -162,23 +150,49 @@ def parse_csv(filepath: str) -> ProfileData:
                     try:
                         data_arrays[arr_idx, row_count] = float(val)
                     except ValueError:
-                        pass  # stays 0.0
-
+                        pass
         row_count += 1
 
-    # Trim to actual row count
     if row_count < max_rows:
         data_arrays = data_arrays[:, :row_count]
 
-    # Build profile
+    return data_arrays, events, row_count
+
+
+def parse_csv(filepath: str) -> ProfileData:
+    """Parse a UE5 CSV profile file and return structured data."""
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        raw = f.read()
+
+    lines = raw.split("\n")
+    if not lines:
+        raise ValueError("Empty CSV file")
+
+    headers = _parse_header(lines[0])
+    events_col = headers.index("EVENTS") if "EVENTS" in headers else 0
+    data_col_indices = [i for i, h in enumerate(headers) if h != "EVENTS"]
+
+    data_start, data_end, metadata = _find_data_bounds(lines)
+
+    if HAS_NATIVE:
+        data_arrays, events, row_count = _native_core.parse_csv_block(
+            raw, data_start, data_end,
+            data_col_indices, events_col, len(headers),
+        )
+    else:
+        data_arrays, events, row_count = _parse_block_python(
+            raw, lines, data_start, data_end,
+            data_col_indices, events_col,
+        )
+
     profile = ProfileData()
     profile.headers = headers
-    profile.events = events
+    profile.events = list(events)
     profile.frame_count = row_count
     profile.filename = filepath
     profile.metadata = metadata
 
     for arr_idx, col_idx in enumerate(data_col_indices):
-        profile.data[headers[col_idx]] = data_arrays[arr_idx]
+        profile.data[headers[col_idx]] = np.ascontiguousarray(data_arrays[arr_idx])
 
     return profile

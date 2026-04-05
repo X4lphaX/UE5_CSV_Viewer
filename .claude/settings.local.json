@@ -7,7 +7,10 @@
       "Bash(pip list:*)",
       "Bash(timeout 6 python main.py)",
       "Bash(taskkill //F //IM UE5_CSV_Viewer.exe)",
-      "Bash(python -c \"from main import MainWindow; print\\('Import OK'\\)\")"
+      "Bash(python -c \"from main import MainWindow; print\\('Import OK'\\)\")",
+      "Bash(python -c \"from main import MainWindow; from csv_parser import parse_csv, HAS_NATIVE; print\\(f'Import OK, native={HAS_NATIVE}'\\)\")",
+      "Bash(python setup.py build_ext --inplace)",
+      "Bash(python -c \"import pybind11; print\\(pybind11.__version__\\)\")"
     ]
   }
 }

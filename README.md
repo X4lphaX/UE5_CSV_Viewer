@@ -35,6 +35,17 @@ pip install PySide6 pyqtgraph numpy
 python main.py
 ```
 
+### Building the native C++ acceleration module (optional)
+
+The application includes an optional C++ extension (via pybind11) that significantly speeds up CSV parsing, data smoothing, and graph rendering for large files. It requires a C++ compiler (MSVC on Windows, gcc/clang on Linux/macOS):
+
+```bash
+pip install pybind11
+python setup.py build_ext --inplace
+```
+
+The application works without the native module (pure-Python fallback), but building it is recommended when working with large CSV files.
+
 ### Building a standalone executable
 
 ```bash
