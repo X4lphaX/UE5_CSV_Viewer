@@ -628,9 +628,13 @@ class ProfileChart(pg.PlotWidget):
         self.profiles: list[ProfileData] = []
         self.color_map: dict[str, QColor] = {}
         self.enabled_channels: set[str] = set()
+        self._sorted_enabled: list[str] = []  # cached sorted list
         self.vertical_scale: float = 1.0
         self.shift_offset: int = 0
         self.smoothing_window: int = 1
+        self._smooth_cache: dict[tuple, np.ndarray] = {}
+        self._smooth_cache_secondary: dict[tuple, np.ndarray] = {}
+        self._secondary_x_base: np.ndarray | None = None
 
         # Connect mouse signals
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
@@ -674,12 +678,13 @@ class ProfileChart(pg.PlotWidget):
         for curve in self.curves.values():
             self.removeItem(curve)
         self.curves.clear()
+        self._invalidate_smooth_cache(secondary=False)
 
         if not self.profiles:
             return
 
         profile = self.profiles[0]
-        x = np.arange(profile.frame_count)
+        x = np.arange(profile.frame_count, dtype=np.float64)
 
         color_idx = 0
         for header in profile.headers:
@@ -688,7 +693,7 @@ class ProfileChart(pg.PlotWidget):
             color = get_channel_color(header, color_idx)
             self.color_map[header] = color
             pen = pg.mkPen(color, width=2)
-            curve = self.plot(x, self._smooth(profile.data[header]),
+            curve = self.plot(x, self._get_smoothed(header, secondary=False),
                              pen=pen, name=header)
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
@@ -699,12 +704,14 @@ class ProfileChart(pg.PlotWidget):
         for curve in self.curves_secondary.values():
             self.removeItem(curve)
         self.curves_secondary.clear()
+        self._secondary_x_base = None
 
         if len(self.profiles) < 2:
             return
 
         profile = self.profiles[1]
-        x = np.arange(profile.frame_count) + self.shift_offset
+        self._secondary_x_base = np.arange(profile.frame_count, dtype=np.float64)
+        x = self._secondary_x_base + self.shift_offset
 
         color_idx = 0
         for header in profile.headers:
@@ -713,7 +720,7 @@ class ProfileChart(pg.PlotWidget):
             color = QColor(get_channel_color(header, color_idx))
             color.setAlpha(153)  # ~60% opacity
             pen = pg.mkPen(color, width=2, style=Qt.PenStyle.DashLine)
-            curve = self.plot(x, self._smooth(profile.data[header]),
+            curve = self.plot(x, self._get_smoothed(header, secondary=True),
                              pen=pen)
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
@@ -724,6 +731,7 @@ class ProfileChart(pg.PlotWidget):
             self.enabled_channels.add(channel)
         else:
             self.enabled_channels.discard(channel)
+        self._sorted_enabled = sorted(self.enabled_channels)
 
         if channel in self.curves:
             self.curves[channel].setVisible(visible)
@@ -747,21 +755,47 @@ class ProfileChart(pg.PlotWidget):
             y_range = max_val * 1.1 / scale
             self.setYRange(-y_range * 0.05, y_range, padding=0)
 
-    def _smooth(self, data: np.ndarray) -> np.ndarray:
+    def _get_smoothed(self, header: str, secondary: bool = False) -> np.ndarray:
+        """Return smoothed data, using cache to avoid recomputation."""
+        cache = self._smooth_cache_secondary if secondary else self._smooth_cache
+        key = (header, self.smoothing_window)
+        if key in cache:
+            return cache[key]
+        idx = 1 if secondary else 0
+        if idx >= len(self.profiles) or header not in self.profiles[idx].data:
+            return np.array([])
+        raw = self.profiles[idx].data[header]
         if self.smoothing_window <= 1:
-            return data
-        kernel = np.ones(self.smoothing_window) / self.smoothing_window
-        return np.convolve(data, kernel, mode='same')
+            result = raw
+        else:
+            kernel = np.ones(self.smoothing_window) / self.smoothing_window
+            result = np.convolve(raw, kernel, mode='same')
+        cache[key] = result
+        return result
+
+    def _invalidate_smooth_cache(self, secondary: bool = False):
+        if secondary:
+            self._smooth_cache_secondary.clear()
+        else:
+            self._smooth_cache.clear()
 
     def set_smoothing(self, window: int):
         self.smoothing_window = window
+        self._smooth_cache.clear()
+        self._smooth_cache_secondary.clear()
         self._rebuild_curves()
         if len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 
     def set_shift_offset(self, offset: int):
         self.shift_offset = offset
-        if len(self.profiles) > 1:
+        if len(self.profiles) > 1 and self._secondary_x_base is not None:
+            # Update X data in-place on existing curves instead of full rebuild
+            x = self._secondary_x_base + offset
+            for header, curve in self.curves_secondary.items():
+                y = self._get_smoothed(header, secondary=True)
+                curve.setData(x, y)
+        elif len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 
     def _on_mouse_moved(self, pos):
@@ -787,33 +821,37 @@ class ProfileChart(pg.PlotWidget):
         self.hline.setVisible(True)
 
         # Build tooltip text with visible channel values
-        lines = [f"<b>Frame {frame_idx}</b>"]
+        parts = [f"<b>Frame {frame_idx}</b>"]
 
         event = profile.events[frame_idx] if frame_idx < len(profile.events) else ""
         if event:
-            lines.append(f"<i>{event}</i>")
+            parts.append(f"<i>{event}</i>")
 
-        for ch in sorted(self.enabled_channels):
-            if ch in profile.data and frame_idx < len(profile.data[ch]):
-                val = profile.data[ch][frame_idx]
-                color = self.color_map.get(ch, QColor("#888888"))
-                lines.append(
-                    f'<span style="color:{color.name()};">■ {ch}: {val:.3f}</span>'
-                )
+        has_secondary = len(self.profiles) > 1
+        p2 = self.profiles[1] if has_secondary else None
+        shifted_idx = frame_idx - self.shift_offset if has_secondary else -1
 
-                # Show comparison value if available
-                if len(self.profiles) > 1:
-                    p2 = self.profiles[1]
-                    shifted_idx = frame_idx - self.shift_offset
-                    if ch in p2.data and 0 <= shifted_idx < p2.frame_count:
-                        val2 = p2.data[ch][shifted_idx]
-                        diff = val - val2
-                        sign = "+" if diff >= 0 else ""
-                        lines.append(
-                            f'<span style="color:{color.name()};">  ⌐ Compare: {val2:.3f} ({sign}{diff:.3f})</span>'
-                        )
+        for ch in self._sorted_enabled:
+            ch_data = profile.data.get(ch)
+            if ch_data is None or frame_idx >= len(ch_data):
+                continue
+            val = ch_data[frame_idx]
+            color_name = self.color_map[ch].name() if ch in self.color_map else "#888888"
+            parts.append(
+                f'<span style="color:{color_name};">■ {ch}: {val:.3f}</span>'
+            )
 
-        html = "<br>".join(lines)
+            if p2 is not None:
+                p2_data = p2.data.get(ch)
+                if p2_data is not None and 0 <= shifted_idx < p2.frame_count:
+                    val2 = p2_data[shifted_idx]
+                    diff = val - val2
+                    sign = "+" if diff >= 0 else ""
+                    parts.append(
+                        f'<span style="color:{color_name};">  ⌐ Compare: {val2:.3f} ({sign}{diff:.3f})</span>'
+                    )
+
+        html = "<br>".join(parts)
         self.tooltip_label.setHtml(html)
         self.tooltip_label.setPos(mouse_point)
         self.tooltip_label.setVisible(True)
