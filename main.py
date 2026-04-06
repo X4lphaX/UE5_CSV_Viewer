@@ -22,14 +22,15 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox, QTabWidget, QTableWidget, QTableWidgetItem,
     QLineEdit, QComboBox, QScrollBar,
 )
-from PySide6.QtCore import Qt, Signal, QPointF
-from PySide6.QtGui import QColor, QPen, QFont, QIcon, QPainter, QAction
+from PySide6.QtCore import Qt, Signal, QPointF, QEvent
+from PySide6.QtGui import QColor, QPen, QFont, QIcon, QPainter, QAction, QNativeGestureEvent
 
 from csv_parser import parse_csv, ProfileData
 
 
 class CustomViewBox(pg.ViewBox):
-    """Custom ViewBox: left-drag = rect zoom, middle-drag = pan, scroll = zoom."""
+    """Custom ViewBox: left-drag = rect zoom, middle-drag = pan,
+    trackpad scroll = pan, trackpad pinch = zoom, mouse wheel = zoom."""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -49,7 +50,6 @@ class CustomViewBox(pg.ViewBox):
         if self._middle_dragging and self._middle_drag_start is not None:
             delta = ev.pos() - self._middle_drag_start
             self._middle_drag_start = ev.pos()
-            # Translate the view
             tr = self.viewRect()
             x_scale = tr.width() / self.width()
             y_scale = tr.height() / self.height()
@@ -65,6 +65,24 @@ class CustomViewBox(pg.ViewBox):
             ev.accept()
         else:
             super().mouseReleaseEvent(ev)
+
+    def wheelEvent(self, ev, axis=None):
+        # Trackpad scroll events have a scroll phase (Begin/Update/End/Momentum).
+        # Mouse wheel events have NoScrollPhase. Use this to distinguish them.
+        phase = ev.phase()
+        is_trackpad = (phase != Qt.ScrollPhase.NoScrollPhase)
+        if is_trackpad:
+            pixel_delta = ev.pixelDelta()
+            if pixel_delta is not None and (pixel_delta.x() != 0 or pixel_delta.y() != 0):
+                tr = self.viewRect()
+                x_scale = tr.width() / self.width()
+                y_scale = tr.height() / self.height()
+                self.translateBy(x=-pixel_delta.x() * x_scale, y=pixel_delta.y() * y_scale)
+                ev.accept()
+                return
+        # Mouse wheel -> zoom (default pyqtgraph behavior)
+        super().wheelEvent(ev, axis)
+
 
 # --- Color Palette ---
 CHANNEL_COLORS = {
@@ -914,6 +932,18 @@ class ProfileChart(pg.PlotWidget):
                     self.click_line.setPos(self.profiles[0].time_axis[frame_idx])
                     self.click_line.setVisible(True)
                     self.frame_clicked.emit(frame_idx)
+
+    def event(self, ev):
+        # Handle native pinch-to-zoom gesture from macOS trackpad
+        if isinstance(ev, QNativeGestureEvent):
+            if ev.gestureType() == Qt.NativeGestureType.ZoomNativeGesture:
+                vb = self.getViewBox()
+                scale_factor = 1.0 - ev.value()
+                center = vb.mapSceneToView(self.mapToScene(ev.position().toPoint()))
+                vb.scaleBy(s=(scale_factor, scale_factor), center=center)
+                ev.accept()
+                return True
+        return super().event(ev)
 
     def reset_zoom(self):
         self.enableAutoRange()
