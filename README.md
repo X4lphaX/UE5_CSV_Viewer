@@ -2,6 +2,8 @@
 
 A desktop application for visualizing and comparing Unreal Engine 5 CSV profiling dumps. Load frame-by-frame performance data exported from UE5, explore timing, memory, rendering, and physics metrics on an interactive graph, and optionally overlay a second capture for side-by-side comparison.
 
+ ![AppScreenshot](https://github.com/X4lphaX/UE5_CSV_Viewer/blob/main/AppImage.png) 
+
 ## Features
 
 - **Interactive graph** — zoom (scroll wheel), pan (middle-click drag), and region-select zoom (left-click drag) across thousands of frames.
