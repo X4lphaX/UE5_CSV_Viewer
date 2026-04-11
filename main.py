@@ -334,6 +334,97 @@ class ChannelToggleWidget(QWidget):
         self.checkbox.setChecked(checked)
 
 
+class CollapsibleGroup(QWidget):
+    """A collapsible section with a left-arrow, a 'toggle all children' checkbox,
+    and a child container that shows/hides when the arrow is clicked."""
+
+    def __init__(self, name: str, parent=None):
+        super().__init__(parent)
+        self.group_name = name
+        self._child_toggles: list[ChannelToggleWidget] = []
+        self._syncing = False
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(2, 2, 2, 2)
+        root.setSpacing(0)
+
+        header = QWidget()
+        header.setStyleSheet(f"background-color: {DARK_PANEL}; border-radius: 3px;")
+        hl = QHBoxLayout(header)
+        hl.setContentsMargins(4, 3, 4, 3)
+        hl.setSpacing(4)
+
+        self.arrow = QToolButton()
+        self.arrow.setArrowType(Qt.ArrowType.DownArrow)
+        self.arrow.setAutoRaise(True)
+        self.arrow.setFixedSize(16, 16)
+        self.arrow.setStyleSheet("QToolButton { border: none; }")
+        self.arrow.clicked.connect(self._toggle_collapse)
+
+        self.checkbox = QCheckBox(name)
+        self.checkbox.setTristate(True)
+        self.checkbox.setChecked(True)
+        self.checkbox.setStyleSheet("QCheckBox { font-weight: bold; }")
+        self.checkbox.clicked.connect(self._on_header_clicked)
+
+        hl.addWidget(self.arrow)
+        hl.addWidget(self.checkbox, 1)
+
+        self.content = QWidget()
+        self.content_layout = QVBoxLayout(self.content)
+        self.content_layout.setContentsMargins(18, 2, 2, 4)
+        self.content_layout.setSpacing(0)
+
+        root.addWidget(header)
+        root.addWidget(self.content)
+
+        self.collapsed = False
+
+    def _toggle_collapse(self):
+        self.collapsed = not self.collapsed
+        self.content.setVisible(not self.collapsed)
+        self.arrow.setArrowType(
+            Qt.ArrowType.RightArrow if self.collapsed else Qt.ArrowType.DownArrow
+        )
+
+    def _on_header_clicked(self, _checked):
+        # User clicked the header checkbox -> apply to all children.
+        # Determine target from current children state (not post-click header
+        # state, since tristate cycles Unchecked -> Partial -> Checked and
+        # would otherwise leave the group stuck off).
+        any_on = any(t.checkbox.isChecked() for t in self._child_toggles)
+        target = not any_on  # if anything is on, turn all off; else turn all on
+        self.checkbox.blockSignals(True)
+        self.checkbox.setCheckState(
+            Qt.CheckState.Checked if target else Qt.CheckState.Unchecked
+        )
+        self.checkbox.blockSignals(False)
+        # Setting child checkboxes propagates via their normal toggled signal
+        # so the chart updates; we just avoid re-updating our own header mid-loop.
+        self._syncing = True
+        for t in self._child_toggles:
+            t.set_checked(target)
+        self._syncing = False
+
+    def add_channel(self, toggle: "ChannelToggleWidget"):
+        self._child_toggles.append(toggle)
+        self.content_layout.addWidget(toggle)
+
+    def update_header_from_children(self):
+        """Update the header checkbox state based on child toggle states."""
+        if self._syncing or not self._child_toggles:
+            return
+        checked_count = sum(1 for t in self._child_toggles if t.checkbox.isChecked())
+        self.checkbox.blockSignals(True)
+        if checked_count == 0:
+            self.checkbox.setCheckState(Qt.CheckState.Unchecked)
+        elif checked_count == len(self._child_toggles):
+            self.checkbox.setCheckState(Qt.CheckState.Checked)
+        else:
+            self.checkbox.setCheckState(Qt.CheckState.PartiallyChecked)
+        self.checkbox.blockSignals(False)
+
+
 class LayerPanel(QWidget):
     """Photoshop-style layer toggle panel with grouped channels."""
     channel_toggled = Signal(str, bool)
@@ -392,11 +483,11 @@ class LayerPanel(QWidget):
         layout.addWidget(scroll, 1)
 
         self.toggles: dict[str, ChannelToggleWidget] = {}
-        self.group_widgets: dict[str, QGroupBox] = {}
+        self.group_widgets: dict[str, CollapsibleGroup] = {}
+        self._channel_to_group: dict[str, str] = {}
 
     def populate(self, profile: ProfileData, color_map: dict[str, QColor]):
         """Populate the layer panel from profile data."""
-        # Clear existing
         for t in self.toggles.values():
             t.setParent(None)
             t.deleteLater()
@@ -405,40 +496,56 @@ class LayerPanel(QWidget):
             g.deleteLater()
         self.toggles.clear()
         self.group_widgets.clear()
+        self._channel_to_group.clear()
 
-        # Remove stretch
         while self.channel_layout.count():
             item = self.channel_layout.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
 
-        groups = profile.get_channel_groups()
+        raw_groups = profile.get_channel_groups()
         default_on = set(ProfileData.TIMING_CHANNELS)
 
-        for group_name, channels in groups.items():
-            group_box = QGroupBox(group_name)
-            group_box.setCheckable(True)
-            group_box.setChecked(True)
-            group_layout = QVBoxLayout(group_box)
-            group_layout.setContentsMargins(4, 4, 4, 4)
-            group_layout.setSpacing(0)
+        # Merge any single-entry prefix group into "Miscellaneous".
+        # Keep the well-known core groups intact even if they happen to be single-entry.
+        core_groups = {"Timing", "Memory", "CPU"}
+        groups: dict[str, list[str]] = {}
+        misc: list[str] = []
+        for group_name, channels in raw_groups.items():
+            if group_name not in core_groups and len(channels) <= 1:
+                misc.extend(channels)
+            else:
+                groups[group_name] = channels
+        if misc:
+            groups["Miscellaneous"] = sorted(misc)
 
-            group_box.toggled.connect(lambda checked, gn=group_name: self._toggle_group(gn, checked))
+        for group_name, channels in groups.items():
+            group = CollapsibleGroup(group_name)
 
             for ch in channels:
                 color = color_map.get(ch, QColor("#888888"))
                 toggle = ChannelToggleWidget(ch, color, checked=(ch in default_on))
                 toggle.toggled.connect(self._on_channel_toggle)
-                group_layout.addWidget(toggle)
+                group.add_channel(toggle)
                 self.toggles[ch] = toggle
+                self._channel_to_group[ch] = group_name
 
-            self.channel_layout.addWidget(group_box)
-            self.group_widgets[group_name] = group_box
+            # Collapse "Miscellaneous" by default to reduce visual clutter
+            if group_name == "Miscellaneous":
+                group._toggle_collapse()
+
+            group.update_header_from_children()
+            self.channel_layout.addWidget(group)
+            self.group_widgets[group_name] = group
 
         self.channel_layout.addStretch()
 
     def _on_channel_toggle(self, name: str, checked: bool):
         self.channel_toggled.emit(name, checked)
+        # Refresh the header checkbox state of this channel's group
+        gn = self._channel_to_group.get(name)
+        if gn and gn in self.group_widgets:
+            self.group_widgets[gn].update_header_from_children()
 
     def _on_smooth_change(self, value: int):
         if value <= 1:
@@ -450,22 +557,15 @@ class LayerPanel(QWidget):
     def _set_all(self, checked: bool):
         for toggle in self.toggles.values():
             toggle.set_checked(checked)
+        for group in self.group_widgets.values():
+            group.update_header_from_children()
 
     def _select_timing(self):
         timing_set = set(ProfileData.TIMING_CHANNELS)
         for name, toggle in self.toggles.items():
             toggle.set_checked(name in timing_set)
-
-    def _toggle_group(self, group_name: str, checked: bool):
-        groups = {}
-        for name, toggle in self.toggles.items():
-            # Find which group this belongs to
-            for gn, gw in self.group_widgets.items():
-                if toggle.parent() and toggle.parent().parent() == gw:
-                    groups.setdefault(gn, []).append(toggle)
-        if group_name in groups:
-            for toggle in groups[group_name]:
-                toggle.set_checked(checked)
+        for group in self.group_widgets.values():
+            group.update_header_from_children()
 
     def _filter_channels(self, text: str):
         text = text.lower()
@@ -1041,7 +1141,7 @@ class MainWindow(QMainWindow):
         self.shift_left_btn = QToolButton()
         self.shift_left_btn.setText("\u25C0")
         self.shift_left_btn.setFixedSize(18, 18)
-        self.shift_left_btn.setToolTip("Shift left 0.1s")
+        self.shift_left_btn.setToolTip("Shift left 0.05s")
         self.shift_left_btn.setAutoRepeat(True)
         self.shift_left_btn.setAutoRepeatInterval(100)
         self.shift_slider = QSlider(Qt.Orientation.Horizontal)
@@ -1052,12 +1152,19 @@ class MainWindow(QMainWindow):
         self.shift_right_btn = QToolButton()
         self.shift_right_btn.setText("\u25B6")
         self.shift_right_btn.setFixedSize(18, 18)
-        self.shift_right_btn.setToolTip("Shift right 0.1s")
+        self.shift_right_btn.setToolTip("Shift right 0.05s")
         self.shift_right_btn.setAutoRepeat(True)
         self.shift_right_btn.setAutoRepeatInterval(100)
-        self.shift_label = QLabel("0.00s")
-        self.shift_label.setStyleSheet(f"color: {DARK_TEXT}; font-size: 10px;")
-        self.shift_label.setFixedWidth(65)
+        # Spinbox allows manual entry with 0.05s precision
+        self.shift_spinbox = QDoubleSpinBox()
+        self.shift_spinbox.setRange(-500.0, 500.0)
+        self.shift_spinbox.setDecimals(3)
+        self.shift_spinbox.setSingleStep(0.05)
+        self.shift_spinbox.setSuffix(" s")
+        self.shift_spinbox.setValue(0.0)
+        self.shift_spinbox.setFixedWidth(90)
+        self.shift_spinbox.setStyleSheet(f"color: {DARK_TEXT}; font-size: 10px;")
+        self.shift_spinbox.setKeyboardTracking(False)
         self.shift_reset = QPushButton("Reset")
         self.shift_reset.setFixedWidth(45)
         self.shift_reset.setFixedHeight(18)
@@ -1066,7 +1173,7 @@ class MainWindow(QMainWindow):
         shift_layout.addWidget(self.shift_left_btn)
         shift_layout.addWidget(self.shift_slider, 1)
         shift_layout.addWidget(self.shift_right_btn)
-        shift_layout.addWidget(self.shift_label)
+        shift_layout.addWidget(self.shift_spinbox)
         shift_layout.addWidget(self.shift_reset)
         self.shift_widget.setVisible(False)
         chart_grid.addWidget(self.shift_widget, 2, 1)
@@ -1112,9 +1219,11 @@ class MainWindow(QMainWindow):
         self.layer_panel.smoothing_changed.connect(self.chart.set_smoothing)
 
         self.shift_slider.valueChanged.connect(self._on_shift_changed)
+        self.shift_spinbox.valueChanged.connect(self._on_shift_spin_changed)
         self.shift_reset.clicked.connect(lambda: self.shift_slider.setValue(0))
-        self.shift_left_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() - 10))
-        self.shift_right_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() + 10))
+        # 5 centiseconds = 0.05s step
+        self.shift_left_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() - 5))
+        self.shift_right_btn.clicked.connect(lambda: self.shift_slider.setValue(self.shift_slider.value() + 5))
 
         # Scrollbars for chart panning
         self.h_scrollbar.valueChanged.connect(self._on_h_scroll)
@@ -1200,6 +1309,10 @@ class MainWindow(QMainWindow):
             )
             max_shift_cs = int(max_time * 100) + 100  # centiseconds with margin
             self.shift_slider.setRange(-max_shift_cs, max_shift_cs)
+            max_shift_s = max_shift_cs / 100.0
+            self.shift_spinbox.blockSignals(True)
+            self.shift_spinbox.setRange(-max_shift_s, max_shift_s)
+            self.shift_spinbox.blockSignals(False)
 
             fname = os.path.basename(path)
             duration2 = profile.time_axis[-1] if profile.frame_count > 0 else 0
@@ -1235,8 +1348,21 @@ class MainWindow(QMainWindow):
     def _on_shift_changed(self, value: int):
         # Slider value is in centiseconds (0.01s steps)
         offset_s = value / 100.0
-        self.shift_label.setText(f"{offset_s:.2f}s")
+        # Sync spinbox without re-triggering
+        self.shift_spinbox.blockSignals(True)
+        self.shift_spinbox.setValue(offset_s)
+        self.shift_spinbox.blockSignals(False)
         self.chart.set_shift_offset(offset_s)
+
+    def _on_shift_spin_changed(self, value: float):
+        # User typed / stepped the spinbox; sync the slider
+        slider_val = int(round(value * 100.0))
+        # Clamp to slider range
+        slider_val = max(self.shift_slider.minimum(), min(self.shift_slider.maximum(), slider_val))
+        self.shift_slider.blockSignals(True)
+        self.shift_slider.setValue(slider_val)
+        self.shift_slider.blockSignals(False)
+        self.chart.set_shift_offset(value)
 
     def _on_frame_clicked(self, frame_idx: int):
         if self.profiles:
