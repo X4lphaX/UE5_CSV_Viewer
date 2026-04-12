@@ -504,7 +504,7 @@ class LayerPanel(QWidget):
                 item.widget().deleteLater()
 
         raw_groups = profile.get_channel_groups()
-        default_on = set(ProfileData.TIMING_CHANNELS)
+        default_on = set(ProfileData.DEFAULT_ON_CHANNELS)
 
         # Merge any single-entry prefix group into "Miscellaneous".
         # Keep the well-known core groups intact even if they happen to be single-entry.
@@ -531,7 +531,7 @@ class LayerPanel(QWidget):
                 self._channel_to_group[ch] = group_name
 
             # Collapse "Miscellaneous" by default to reduce visual clutter
-            if group_name == "Miscellaneous":
+            if group_name != "Timing":
                 group._toggle_collapse()
 
             group.update_header_from_children()
@@ -1260,7 +1260,7 @@ class MainWindow(QMainWindow):
             self.layer_panel.populate(profile, self.color_map)
 
             # Set default enabled channels to timing
-            default_channels = set(ProfileData.TIMING_CHANNELS) & set(profile.data.keys())
+            default_channels = set(ProfileData.DEFAULT_ON_CHANNELS) & set(profile.data.keys())
             self.chart.enabled_channels = default_channels
             self.chart.color_map = self.color_map
 
