@@ -1261,8 +1261,14 @@
  [],
  False,
  False,
+<<<<<<< HEAD
  1776148102,
  [('runw.exe',
    'C:\\Users\\jackp\\AppData\\Local\\Python\\pythoncore-3.14-64\\Lib\\site-packages\\PyInstaller\\bootloader\\Windows-64bit-intel\\runw.exe',
+=======
+ 1775980506,
+ [('runw',
+   '/Users/jacopopugioni/Library/Python/3.9/lib/python/site-packages/PyInstaller/bootloader/Darwin-64bit/runw',
+>>>>>>> b3871a175c3ae675b2f81c3beed90530574fe326
    'EXECUTABLE')],
  'C:\\Users\\jackp\\AppData\\Local\\Python\\pythoncore-3.14-64\\python314.DLL')

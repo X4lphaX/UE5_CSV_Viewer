@@ -35,6 +35,14 @@ class ProfileData:
         "FrameTime", "GameThreadTime", "RenderThreadTime", "GPUTime",
         "RenderThreadTime_CriticalPath", "GameThreadTime_CriticalPath",
         "RHIThreadTime", "InputLatencyTime", "MaxFrameTime",
+        "RHI/DrawCalls", "RHI/PrimitivesDrawn",
+    ]
+
+    # Channels enabled by default on load (subset of TIMING_CHANNELS)
+    DEFAULT_ON_CHANNELS = [
+        "FrameTime", "GameThreadTime", "RenderThreadTime", "GPUTime",
+        "RenderThreadTime_CriticalPath", "GameThreadTime_CriticalPath",
+        "RHIThreadTime", "InputLatencyTime", "MaxFrameTime",
     ]
 
     MEMORY_CHANNELS = [

@@ -21,7 +21,10 @@
       "Bash(python3 -c \"import _native_core; print\\('Native module loaded OK'\\)\")",
       "Bash(python3 build.py --native)",
       "Bash(open dist/UE5_CSV_Viewer.app)",
-      "Bash(python3 build.py)"
+      "Bash(python3 build.py)",
+      "Bash(gh --version)",
+      "Read(//opt/homebrew/bin/**)",
+      "Read(//usr/local/bin/**)"
     ]
   }
 }
