@@ -27,6 +27,8 @@ from PySide6.QtGui import QColor, QPen, QFont, QIcon, QPainter, QAction, QNative
 
 from csv_parser import parse_csv, ProfileData
 
+pg.setConfigOptions(useOpenGL=True, antialias=False, enableExperimental=True)
+
 
 class CustomViewBox(pg.ViewBox):
     """Custom ViewBox: left-drag = rect zoom, middle-drag = pan,
@@ -762,6 +764,7 @@ class ProfileChart(pg.PlotWidget):
         self._smooth_cache_secondary: dict[tuple, np.ndarray] = {}
         self._primary_x: np.ndarray | None = None
         self._secondary_x_base: np.ndarray | None = None
+        self._last_tooltip_frame: int = -1
 
         # Connect mouse signals
         self.scene().sigMouseMoved.connect(self._on_mouse_moved)
@@ -823,6 +826,8 @@ class ProfileChart(pg.PlotWidget):
             y = self._get_smoothed(header, secondary=False)
             dx, dy = self._downsample(self._primary_x, y)
             curve = self.plot(dx, dy, pen=pen, name=header)
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method='peak')
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
             color_idx += 1
@@ -845,12 +850,22 @@ class ProfileChart(pg.PlotWidget):
         for header in profile.headers:
             if header == "EVENTS":
                 continue
-            color = QColor(get_channel_color(header, color_idx))
-            color.setAlpha(153)  # ~60% opacity
-            pen = pg.mkPen(color, width=2, style=Qt.PenStyle.DashLine)
+            # OpenGL line renderer ignores per-pen alpha, so simulate transparency
+            # by pre-blending the channel color toward the background.
+            base = QColor(get_channel_color(header, color_idx))
+            bg = QColor(DARK_BG)
+            a = 0.45  # effective opacity
+            color = QColor(
+                int(base.red() * a + bg.red() * (1 - a)),
+                int(base.green() * a + bg.green() * (1 - a)),
+                int(base.blue() * a + bg.blue() * (1 - a)),
+            )
+            pen = pg.mkPen(color, width=2)
             y = self._get_smoothed(header, secondary=True)
             dx, dy = self._downsample(x, y)
             curve = self.plot(dx, dy, pen=pen)
+            curve.setClipToView(True)
+            curve.setDownsampling(auto=True, method='peak')
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
             color_idx += 1
@@ -929,18 +944,30 @@ class ProfileChart(pg.PlotWidget):
         self.smoothing_window = window
         self._smooth_cache.clear()
         self._smooth_cache_secondary.clear()
-        self._rebuild_curves()
-        if len(self.profiles) > 1:
-            self._rebuild_secondary_curves()
+        if self._primary_x is not None:
+            for header, curve in self.curves.items():
+                y = self._get_smoothed(header, secondary=False)
+                if len(y):
+                    curve.setData(self._primary_x, y)
+        if self._secondary_x_base is not None:
+            x = self._secondary_x_base + self.shift_offset
+            for header, curve in self.curves_secondary.items():
+                y = self._get_smoothed(header, secondary=True)
+                if len(y):
+                    curve.setData(x, y)
 
     def set_shift_offset(self, offset: float):
         self.shift_offset = offset
-        if len(self.profiles) > 1 and self._secondary_x_base is not None:
+        if self._secondary_x_base is not None:
             x = self._secondary_x_base + offset
+            vb = self.getViewBox()
+            (xmin, xmax), _ = vb.viewRange()
+            vb.disableAutoRange(axis=vb.XAxis)
             for header, curve in self.curves_secondary.items():
                 y = self._get_smoothed(header, secondary=True)
-                dx, dy = self._downsample(x, y)
-                curve.setData(dx, dy)
+                if len(y):
+                    curve.setData(x, y)
+            vb.setXRange(xmin, xmax, padding=0)
         elif len(self.profiles) > 1:
             self._rebuild_secondary_curves()
 
@@ -978,6 +1005,12 @@ class ProfileChart(pg.PlotWidget):
         self.hline.setPos(mouse_point.y())
         self.vline.setVisible(True)
         self.hline.setVisible(True)
+
+        # Skip tooltip HTML rebuild if frame hasn't changed (mouse just moved within same frame)
+        if frame_idx == self._last_tooltip_frame and self.tooltip_label.isVisible():
+            self.tooltip_label.setPos(mouse_point)
+            return
+        self._last_tooltip_frame = frame_idx
 
         # Build tooltip text with visible channel values
         frame_time = profile.time_axis[frame_idx]
