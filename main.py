@@ -828,6 +828,7 @@ class ProfileChart(pg.PlotWidget):
             curve = self.plot(dx, dy, pen=pen, name=header)
             curve.setClipToView(True)
             curve.setDownsampling(auto=True, method='peak')
+            curve.setZValue(10)
             curve.setVisible(header in self.enabled_channels)
             self.curves[header] = curve
             color_idx += 1
@@ -866,6 +867,7 @@ class ProfileChart(pg.PlotWidget):
             curve = self.plot(dx, dy, pen=pen)
             curve.setClipToView(True)
             curve.setDownsampling(auto=True, method='peak')
+            curve.setZValue(0)
             curve.setVisible(header in self.enabled_channels)
             self.curves_secondary[header] = curve
             color_idx += 1
